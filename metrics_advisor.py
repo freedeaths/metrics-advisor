@@ -1,4 +1,9 @@
 #from mathbox.app.signal.correlation import max_corr
+from jinja2 import PackageLoader,Environment
+import tarfile
+import shutil
+import uuid
+
 import matplotlib.pyplot as plt
 import glob
 import os
@@ -55,59 +60,60 @@ def get_relative(list):
 
 
 if __name__ == "__main__":
-
-    # 目前的问题：
-    # 1. 时间戳没有对齐，应该要对齐，暂时取交集
+    # 目前：
+    # 1. 时间暂时没有对齐，因为相关性有 lag 参数
     # 2. NaN/Null/None 的处理暂时交由上游处理，一是零星的插值，二是大片没有的删除，三是有 Trigger 的，应该补，暂时先直接删除 NaN 行数占比来处理。
-    #signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/prom_metrics/metrics-analysis-data/full-index-lookup/reshape/*.csv") # 整个，约400秒
-    signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/metrics/rand-batch-point-get/*.csv")
+
+    tmp_dir = './' + str(uuid.uuid4()) + '/'
+    tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
+    files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
+    head, _ = os.path.split(files[0].name)
+    tar.extractall(tmp_dir, files)
+    tar.close()
+    signals = get_valid_signals(tmp_dir + head + '/*.csv')
     #signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/prom_metrics/metrics-analysis-data/full-index-lookup/reshape/node_disk_write_dur:by_instance:by_device.csv") # 单个，省时间
+
     count_bucket = 40 # 15 seconds * 40 = 10 minutes
     sample_time_step = 15 # seconds
     buckets = []
-    change_points = []
-    outliers = []
-    detected_signals = []
 
     time_min, time_max = time_minmax(signals)
     samples = (time_max - time_min) // sample_time_step + 1 # 480
     
     for i in range(samples//count_bucket):
-        #buckets.append({'start':time_min + i*count_bucket*sample_time_step, 'end':time_min + (i+1)*count_bucket*sample_time_step-sample_time_step, 'count':0})
         buckets.append({'start':time_min + i*count_bucket*sample_time_step, 'obj':[], 'candidates': []})
 
     start = time.time()
     
 
     obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
-    # obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur']
 
     # main loop
     for item in signals:
         if max(item['data'].tolist()) - min(item['data'].tolist()) > 0.005:
-        # item-file, item[1]-df, item[1].columns]
-            cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100) # return an index list
-            outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3) # return an index list
+            cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100)
+            outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3)
 
-        anormaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
+        anomaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
 
-        if anormaly != []:
-            anormaly_timestamps = [item['timestamp'][x] for x in cp]
+        if anomaly != []:
+            anomaly_timestamps = [item['timestamp'][x] for x in cp]
 
-            for i in anormaly_timestamps:
-                if item not in buckets[(i-time_min)//sample_time_step//count_bucket]['obj'] and item not in buckets[(i-time_min)//sample_time_step//count_bucket]['candidates']:
+            for i in anomaly_timestamps:
+                num = (i-time_min)//sample_time_step//count_bucket
+                if item not in buckets[num]['obj'] and item not in buckets[num]['candidates']:
                     if item['name'] in obj_signals:
-                        buckets[(i-time_min)//sample_time_step//count_bucket]['obj'].append(item)
+                        buckets[num]['obj'].append(item)
                     else:
-                        buckets[(i-time_min)//sample_time_step//count_bucket]['candidates'].append(item)
-    end = time.time() # about 320s
+                        buckets[num]['candidates'].append(item)
+    end = time.time()
     print("CPD and outlier time cost: ", end-start)
     start = time.time()
 
     for bucket in buckets:
         correlation = []
         i = buckets.index(bucket)
-        if bucket['obj'] != []: # 暂时没循环obj
+        if bucket['obj'] != []:
             for obj in bucket['obj']:
                 for candidate in bucket['candidates']:
                     if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
@@ -126,17 +132,23 @@ if __name__ == "__main__":
                     can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
                     plt.plot(can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
                 plt.legend(framealpha=0.3)
-                #plt.show()
                 plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'__'+obj['name']+'.png')
                 plt.close()
                 plt.cla()
                 plt.clf()
 
-
-    #correlation = max_corr(obj, candidates, 4)[1:]
-    #print("correlation is: {}".format(correlation))
     end = time.time() # about 320s
     print("Correlation time cost: ", end-start)
 
+    shutil.rmtree(tmp_dir)
 
- 
+    foo = {'bar':'Bang!'}
+    report_path = './reports/'
+    pics = [f for f in os.listdir(report_path) if f.endswith('.png')]
+
+    dict = {'foo':foo,'anomaly':anomaly,'sort_corr':sort_corr[:5], 'pics':pics}
+
+    env = Environment(loader=PackageLoader('metrics_advisor','templates'))
+    template = env.get_template('report.tpl')
+    with open('./reports/report.md','w') as f:
+        f.write(template.render(dict))

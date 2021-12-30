@@ -1,1 +1,0 @@
-timestamp,172.17.16.13:20180:prewrite,172.17.16.14:20180:acquire_pessimistic_lock,172.17.16.14:20180:commit,172.17.16.14:20180:prewrite,172.17.16.14:20180:resolve_lock
