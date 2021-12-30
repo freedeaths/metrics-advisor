@@ -2,7 +2,6 @@
 import matplotlib.pyplot as plt
 import glob
 import os
-from numpy import sign
 import pandas as pd
 import time
 
@@ -63,7 +62,6 @@ if __name__ == "__main__":
     #signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/prom_metrics/metrics-analysis-data/full-index-lookup/reshape/*.csv") # 整个，约400秒
     signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/metrics/rand-batch-point-get/*.csv")
     #signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/prom_metrics/metrics-analysis-data/full-index-lookup/reshape/node_disk_write_dur:by_instance:by_device.csv") # 单个，省时间
-
     count_bucket = 40 # 15 seconds * 40 = 10 minutes
     sample_time_step = 15 # seconds
     buckets = []
@@ -81,14 +79,15 @@ if __name__ == "__main__":
     start = time.time()
     
 
-    # obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
-    obj_signals = ['tidb_p99_rt:total']
+    obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
+    # obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur']
 
     # main loop
     for item in signals:
+        if max(item['data'].tolist()) - min(item['data'].tolist()) > 0.005:
         # item-file, item[1]-df, item[1].columns]
-        cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100) # return an index list
-        outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3) # return an index list
+            cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100) # return an index list
+            outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3) # return an index list
 
         anormaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
 
@@ -101,35 +100,43 @@ if __name__ == "__main__":
                         buckets[(i-time_min)//sample_time_step//count_bucket]['obj'].append(item)
                     else:
                         buckets[(i-time_min)//sample_time_step//count_bucket]['candidates'].append(item)
-
+    end = time.time() # about 320s
+    print("CPD and outlier time cost: ", end-start)
+    start = time.time()
 
     for bucket in buckets:
         correlation = []
         i = buckets.index(bucket)
         if bucket['obj'] != []: # 暂时没循环obj
-            for candidate in bucket['candidates']:
-                a = bucket['obj'][0]['data'][40*i:40*i+40].tolist()
-                b = candidate['data'][40*i:40*i+40].tolist()
-                tmp = ncc(a, b, lag_max=10)
-                corr = max(tmp, key=lambda x:x[1])
-                correlation.append({'name': candidate['name'],'corr': corr})
-            sort_corr = sorted(correlation, key=lambda x:x['corr'][1], reverse=True)
-            print(sort_corr)
-            obj_data = get_relative(bucket['obj'][0]['data'].tolist()[40*i:40*i+40])
-            plt.plot(obj_data,'ro-', label=bucket['obj'][0]['name'])
-            for it in sort_corr[:5]:
-                can = next(item for item in bucket['candidates'] if item['name'] == it['name'])
-                can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
-                plt.plot(can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name'])
-            plt.legend()
-            #plt.show()
-            plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'.png')
+            for obj in bucket['obj']:
+                for candidate in bucket['candidates']:
+                    if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
+                        a = obj['data'][40*i:40*i+40].tolist()
+                        b = candidate['data'][40*i:40*i+40].tolist()
+                        tmp = ncc(a, b, lag_max=3) # 原来是 10 个点，现在只用了 3 个点，系统惯性小
+                        corr = max(tmp, key=lambda x:abs(x[1])) # abs 的话把负相关也算上了
+                        correlation.append({'name': candidate['name'],'corr': corr})
+                if correlation != []:
+                    sort_corr = sorted(correlation, key=lambda x:abs(x['corr'][1]), reverse=True) # abs 的话把负相关也算上了
+                print(sort_corr)
+                obj_data = get_relative(obj['data'].tolist()[40*i:40*i+40])
+                plt.plot(obj_data,'ro-', label=obj['name'])
+                for it in sort_corr[:5]:
+                    can = next(item for item in bucket['candidates'] if item['name'] == it['name'])
+                    can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
+                    plt.plot(can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
+                plt.legend(framealpha=0.3)
+                #plt.show()
+                plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'__'+obj['name']+'.png')
+                plt.close()
+                plt.cla()
+                plt.clf()
 
 
     #correlation = max_corr(obj, candidates, 4)[1:]
     #print("correlation is: {}".format(correlation))
     end = time.time() # about 320s
-    print("CPD time cost: ", end-start)
+    print("Correlation time cost: ", end-start)
 
 
  
