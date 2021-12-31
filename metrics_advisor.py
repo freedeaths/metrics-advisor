@@ -15,7 +15,8 @@ from mathbox.statistics.estimator import ncc
 from mathbox.app.signal.filter import moving_median, f_lowpass_filter
 from mathbox.app.signal.outlier import noise_outlier
 
-from energy_statistics import e_divisive
+#from energy_statistics import e_divisive # pure python
+from signal_processing_algorithms.energy_statistics.energy_statistics import e_divisive # with c lib
 
 def get_valid_signals(path):
     csv_files = glob.glob(path)
@@ -65,7 +66,9 @@ if __name__ == "__main__":
     # 2. NaN/Null/None 的处理暂时交由上游处理，一是零星的插值，二是大片没有的删除，三是有 Trigger 的，应该补，暂时先直接删除 NaN 行数占比来处理。
 
     tmp_dir = './' + str(uuid.uuid4()) + '/'
-    tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
+    tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
     files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
     head, _ = os.path.split(files[0].name)
     tar.extractall(tmp_dir, files)
@@ -78,9 +81,10 @@ if __name__ == "__main__":
     buckets = []
 
     time_min, time_max = time_minmax(signals)
+    print('time_min:', time_min, 'time_max:', time_max, 'time: ', time_max - time_min)
     samples = (time_max - time_min) // sample_time_step + 1 # 480
     
-    for i in range(samples//count_bucket):
+    for i in range(samples//count_bucket + 1):
         buckets.append({'start':time_min + i*count_bucket*sample_time_step, 'obj':[], 'candidates': []})
 
     start = time.time()
@@ -93,22 +97,24 @@ if __name__ == "__main__":
         if max(item['data'].tolist()) - min(item['data'].tolist()) > 0.005:
             cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100)
             outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3)
+        
+            anomaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
 
-        anomaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
+            if anomaly != []:
+                anomaly_timestamps = [item['timestamp'][x] for x in cp]
 
-        if anomaly != []:
-            anomaly_timestamps = [item['timestamp'][x] for x in cp]
-
-            for i in anomaly_timestamps:
-                num = (i-time_min)//sample_time_step//count_bucket
-                if item not in buckets[num]['obj'] and item not in buckets[num]['candidates']:
-                    if item['name'] in obj_signals:
-                        buckets[num]['obj'].append(item)
-                    else:
-                        buckets[num]['candidates'].append(item)
+                for i in anomaly_timestamps:
+                    num = (i-time_min)//sample_time_step//count_bucket
+                    if item not in buckets[num]['obj'] and item not in buckets[num]['candidates']:
+                        if item['name'] in obj_signals:
+                            buckets[num]['obj'].append(item)
+                        else:
+                            buckets[num]['candidates'].append(item)
     end = time.time()
     print("CPD and outlier time cost: ", end-start)
     start = time.time()
+
+    suffix = str(tmp_dir)[-9:-1]
 
     for bucket in buckets:
         correlation = []
@@ -132,7 +138,7 @@ if __name__ == "__main__":
                     can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
                     plt.plot(can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
                 plt.legend(framealpha=0.3)
-                plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'__'+obj['name']+'.png')
+                plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'_'+obj['name']+'_'+ suffix +'.png')
                 plt.close()
                 plt.cla()
                 plt.clf()
@@ -144,11 +150,12 @@ if __name__ == "__main__":
 
     foo = {'bar':'Bang!'}
     report_path = './reports/'
-    pics = [f for f in os.listdir(report_path) if f.endswith('.png')]
+    pics = [f for f in os.listdir(report_path) if f.endswith(suffix+ '.png')]
 
     dict = {'foo':foo,'anomaly':anomaly,'sort_corr':sort_corr[:5], 'pics':pics}
 
     env = Environment(loader=PackageLoader('metrics_advisor','templates'))
     template = env.get_template('report.tpl')
-    with open('./reports/report.md','w') as f:
+    output = './reports/report_'+suffix+'.md'
+    with open(output,'w') as f:
         f.write(template.render(dict))
