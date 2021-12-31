@@ -66,9 +66,14 @@ if __name__ == "__main__":
     # 2. NaN/Null/None 的处理暂时交由上游处理，一是零星的插值，二是大片没有的删除，三是有 Trigger 的，应该补，暂时先直接删除 NaN 行数占比来处理。
 
     tmp_dir = './' + str(uuid.uuid4()) + '/'
+    report_path = './reports/'
+    try:
+        os.mkdir(report_path)
+    except:
+        pass
     #tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
-    #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
-    tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
+    tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
     files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
     head, _ = os.path.split(files[0].name)
     tar.extractall(tmp_dir, files)
@@ -149,7 +154,7 @@ if __name__ == "__main__":
     shutil.rmtree(tmp_dir)
 
     foo = {'bar':'Bang!'}
-    report_path = './reports/'
+    
     pics = [f for f in os.listdir(report_path) if f.endswith(suffix+ '.png')]
 
     dict = {'foo':foo,'anomaly':anomaly,'sort_corr':sort_corr[:5], 'pics':pics}
