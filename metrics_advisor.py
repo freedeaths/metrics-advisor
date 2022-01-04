@@ -11,6 +11,7 @@ from signal_processing_algorithms.energy_statistics.energy_statistics import e_d
 
 import matplotlib.pyplot as plt
 import matplotlib.dates as md
+import matplotlib.transforms as mtrans
 import pandas as pd
 from jinja2 import PackageLoader,Environment
 
@@ -71,6 +72,8 @@ if __name__ == "__main__":
     tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
+    #tar = tarfile.open('./metrics/fix-update-key.tar.gz')
+    #tar = tarfile.open('./metrics/full-index-lookup.tar.gz')
     files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
     head, _ = os.path.split(files[0].name)
     tar.extractall(tmp_dir, files)
@@ -90,7 +93,8 @@ if __name__ == "__main__":
     start = time.time()
     
     # set T
-    obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
+    #obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
+    obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_heap_size:by_instance']
 
     # set B to different time buckets
     for item in signals:
@@ -138,13 +142,14 @@ if __name__ == "__main__":
                 cor.append({'name': obj['name'], 'corre': sort_corr})
                 obj_data = get_relative(obj['data'].tolist()[40*i:40*i+40])
                 datenums = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in obj['timestamp'][40*i:40*i+40].tolist()])
-                plt.plot(datenums,obj_data,'ro-', label=obj['name'])
+                plt.plot(datenums,obj_data,'ro-', label=obj['name'], alpha=0.5)
                 for it in sort_corr[:3]:
                     can = next(item for item in bucket['candidates'] if item['name'] == it['name'])
                     can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
                     #plt.plot(can['timestamp'][40*i:40*i+40].tolist(),can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
                     datenum = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in can['timestamp'][40*i:40*i+40].tolist()])
-                    plt.plot(datenum,can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
+                    tr = mtrans.offset_copy(plt.gca().transData, fig=plt.gcf(), x=0.0, y=-1.5, units='points')
+                    plt.plot(datenum,can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'], alpha=0.5, transform=tr)
                 plt.gca().xaxis.set_major_formatter(md.DateFormatter('%H:%M:%S'))
                 plt.legend(framealpha=0.3, fontsize=8)
                 plt.xticks(rotation=45, fontsize=8)
