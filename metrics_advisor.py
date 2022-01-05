@@ -60,6 +60,8 @@ def get_relative(list):
 
 if __name__ == "__main__":
     # 目前：
+    # TODO: 手动去掉所有不连续的时间
+    # TODO: 修 BUG seek_ops 的相关性对不对
     # 1. 时间暂时没有对齐，因为相关性有 lag 参数
     # 2. NaN/Null/None 的处理暂时交由上游处理，一是零星的插值，二是大片没有的删除，三是有 Trigger 的，应该补，暂时先直接删除 NaN 行数占比来处理。
 
@@ -70,6 +72,7 @@ if __name__ == "__main__":
     except:
         pass
     tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/write-auto-inc-full-index-lookup.tar.gz')
     #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
     #tar = tarfile.open('./metrics/fix-update-key.tar.gz')
@@ -134,26 +137,32 @@ if __name__ == "__main__":
                     if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
                         a = obj['data'][40*i:40*i+40].tolist()
                         b = candidate['data'][40*i:40*i+40].tolist()
+                        #if candidate['name'] == 'tikv_seek_ops:by_type': # for test
+                        #    print("a: ", a) # for test
+                        #    print("b: ", b) # for test
+                        #    print("node: ", candidate['node']) # for test
                         tmp = ncc(a, b, lag_max=3) # 原来是 10 个点，现在只用了 3 个点，系统惯性小
                         corr = max(tmp, key=lambda x:abs(x[1])) # abs 的话把负相关也算上了
-                        correlation.append({'name': candidate['name'],'corr': corr})
+                        correlation.append({'candidate': candidate,'corr': corr}) # 改一下 candidate['name'] -> candidate
                 if correlation != []:
                     sort_corr = sorted(correlation, key=lambda x:abs(x['corr'][1]), reverse=True) # abs 的话把负相关也算上了
                 cor.append({'name': obj['name'], 'corre': sort_corr})
                 obj_data = get_relative(obj['data'].tolist()[40*i:40*i+40])
                 datenums = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in obj['timestamp'][40*i:40*i+40].tolist()])
                 plt.plot(datenums,obj_data,'ro-', label=obj['name'], alpha=0.5)
+                plt.plot(datenums,moving_median(obj_data, 5),'bo-', label=obj['name']+'_filtered', alpha=0.3) # plot filtered data
+                
                 for it in sort_corr[:3]:
-                    can = next(item for item in bucket['candidates'] if item['name'] == it['name'])
+                    can = next(item for item in bucket['candidates'] if item['name'] == it['candidate']['name'] and item['node'] == it['candidate']['node'])
                     can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
                     #plt.plot(can['timestamp'][40*i:40*i+40].tolist(),can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
                     datenum = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in can['timestamp'][40*i:40*i+40].tolist()])
                     tr = mtrans.offset_copy(plt.gca().transData, fig=plt.gcf(), x=0.0, y=-1.5, units='points')
-                    plt.plot(datenum,can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'], alpha=0.5, transform=tr)
+                    plt.plot(datenum,can_data, label='top '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'], alpha=0.5, transform=tr)
                 plt.gca().xaxis.set_major_formatter(md.DateFormatter('%H:%M:%S'))
                 plt.legend(framealpha=0.3, fontsize=8)
                 plt.xticks(rotation=45, fontsize=8)
-                plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'_'+obj['name']+'_'+ suffix +'.png')
+                plt.savefig('./reports/bucket_'+str(i)+'_'+obj['name']+'_'+ suffix +'.png')
                 plt.close()
                 plt.cla()
                 plt.clf()
