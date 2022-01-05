@@ -1,22 +1,20 @@
-#from mathbox.app.signal.correlation import max_corr
-from jinja2 import PackageLoader,Environment
-import tarfile
-import shutil
-import uuid
-
-import matplotlib.pyplot as plt
-import glob
-import os
-import pandas as pd
-import time
+import os, shutil, glob
+import time, tarfile, uuid, datetime
 
 from mathbox.statistics.estimator import ncc
+#from mathbox.app.signal.correlation import max_corr
 #from mathbox.app.signal.change_point import e_divisive
 from mathbox.app.signal.filter import moving_median, f_lowpass_filter
 from mathbox.app.signal.outlier import noise_outlier
-
 #from energy_statistics import e_divisive # pure python
 from signal_processing_algorithms.energy_statistics.energy_statistics import e_divisive # with c lib
+
+import matplotlib.pyplot as plt
+import matplotlib.dates as md
+import matplotlib.transforms as mtrans
+import pandas as pd
+from jinja2 import PackageLoader,Environment
+
 
 def get_valid_signals(path):
     csv_files = glob.glob(path)
@@ -62,6 +60,8 @@ def get_relative(list):
 
 if __name__ == "__main__":
     # 目前：
+    # TODO: 手动去掉所有不连续的时间
+    # TODO: 修 BUG seek_ops 的相关性对不对
     # 1. 时间暂时没有对齐，因为相关性有 lag 参数
     # 2. NaN/Null/None 的处理暂时交由上游处理，一是零星的插值，二是大片没有的删除，三是有 Trigger 的，应该补，暂时先直接删除 NaN 行数占比来处理。
 
@@ -71,22 +71,23 @@ if __name__ == "__main__":
         os.mkdir(report_path)
     except:
         pass
-    #tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
-    tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
+    tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/write-auto-inc-full-index-lookup.tar.gz')
+    #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
+    #tar = tarfile.open('./metrics/fix-update-key.tar.gz')
+    #tar = tarfile.open('./metrics/full-index-lookup.tar.gz')
     files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
     head, _ = os.path.split(files[0].name)
     tar.extractall(tmp_dir, files)
     tar.close()
     signals = get_valid_signals(tmp_dir + head + '/*.csv')
-    #signals = get_valid_signals("/Users/sunyishen/PingCAP/repos/playground/prom_metrics/metrics-analysis-data/full-index-lookup/reshape/node_disk_write_dur:by_instance:by_device.csv") # 单个，省时间
-
+    
     count_bucket = 40 # 15 seconds * 40 = 10 minutes
     sample_time_step = 15 # seconds
     buckets = []
 
     time_min, time_max = time_minmax(signals)
-    print('time_min:', time_min, 'time_max:', time_max, 'time: ', time_max - time_min)
     samples = (time_max - time_min) // sample_time_step + 1 # 480
     
     for i in range(samples//count_bucket + 1):
@@ -94,13 +95,16 @@ if __name__ == "__main__":
 
     start = time.time()
     
+    # set T
+    #obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
+    obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_heap_size:by_instance']
 
-    obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
-
-    # main loop
+    # set B to different time buckets
     for item in signals:
         if max(item['data'].tolist()) - min(item['data'].tolist()) > 0.005:
-            cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100)
+            med_filtered = moving_median(item['data'].tolist(), 5) # filtered
+            cp = e_divisive(med_filtered,pvalue=0.05,permutations=100) # filtered
+            #cp = e_divisive(item['data'].tolist(),pvalue=0.05,permutations=100) # original
             outlier = get_noise(item['data'].tolist(), 5, sample_time_step, 3, 0.01/sample_time_step, 3)
         
             anomaly = list(set(cp + outlier)) # 暂时不区分异常和变化点
@@ -121,8 +125,11 @@ if __name__ == "__main__":
 
     suffix = str(tmp_dir)[-9:-1]
 
+    stats = []
+    # correlation in each bucket
     for bucket in buckets:
         correlation = []
+        cor = []
         i = buckets.index(bucket)
         if bucket['obj'] != []:
             for obj in bucket['obj']:
@@ -130,35 +137,47 @@ if __name__ == "__main__":
                     if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
                         a = obj['data'][40*i:40*i+40].tolist()
                         b = candidate['data'][40*i:40*i+40].tolist()
+                        #if candidate['name'] == 'tikv_seek_ops:by_type': # for test
+                        #    print("a: ", a) # for test
+                        #    print("b: ", b) # for test
+                        #    print("node: ", candidate['node']) # for test
                         tmp = ncc(a, b, lag_max=3) # 原来是 10 个点，现在只用了 3 个点，系统惯性小
                         corr = max(tmp, key=lambda x:abs(x[1])) # abs 的话把负相关也算上了
-                        correlation.append({'name': candidate['name'],'corr': corr})
+                        correlation.append({'candidate': candidate,'corr': corr}) # 改一下 candidate['name'] -> candidate
                 if correlation != []:
                     sort_corr = sorted(correlation, key=lambda x:abs(x['corr'][1]), reverse=True) # abs 的话把负相关也算上了
-                print(sort_corr)
+                cor.append({'name': obj['name'], 'corre': sort_corr})
                 obj_data = get_relative(obj['data'].tolist()[40*i:40*i+40])
-                plt.plot(obj_data,'ro-', label=obj['name'])
-                for it in sort_corr[:5]:
-                    can = next(item for item in bucket['candidates'] if item['name'] == it['name'])
+                datenums = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in obj['timestamp'][40*i:40*i+40].tolist()])
+                plt.plot(datenums,obj_data,'ro-', label=obj['name'], alpha=0.5)
+                plt.plot(datenums,moving_median(obj_data, 5),'bo-', label=obj['name']+'_filtered', alpha=0.3) # plot filtered data
+                
+                for it in sort_corr[:3]:
+                    can = next(item for item in bucket['candidates'] if item['name'] == it['candidate']['name'] and item['node'] == it['candidate']['node'])
                     can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
-                    plt.plot(can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
-                plt.legend(framealpha=0.3)
-                plt.savefig('/Users/sunyishen/PingCAP/repos/playground/metrics-advisor/reports/bucket_'+str(i)+'_'+obj['name']+'_'+ suffix +'.png')
+                    #plt.plot(can['timestamp'][40*i:40*i+40].tolist(),can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
+                    datenum = md.date2num([datetime.datetime.fromtimestamp(ts) for ts in can['timestamp'][40*i:40*i+40].tolist()])
+                    tr = mtrans.offset_copy(plt.gca().transData, fig=plt.gcf(), x=0.0, y=-1.5, units='points')
+                    plt.plot(datenum,can_data, label='top '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'], alpha=0.5, transform=tr)
+                plt.gca().xaxis.set_major_formatter(md.DateFormatter('%H:%M:%S'))
+                plt.legend(framealpha=0.3, fontsize=8)
+                plt.xticks(rotation=45, fontsize=8)
+                plt.savefig('./reports/bucket_'+str(i)+'_'+obj['name']+'_'+ suffix +'.png')
                 plt.close()
                 plt.cla()
                 plt.clf()
+        stats.append(cor)
 
     end = time.time() # about 320s
     print("Correlation time cost: ", end-start)
 
     shutil.rmtree(tmp_dir)
 
-    foo = {'bar':'Bang!'}
+    foo = {'bar':'metrics-advisor team'}
     
     pics = [f for f in os.listdir(report_path) if f.endswith(suffix+ '.png')]
 
-    dict = {'foo':foo,'anomaly':anomaly,'sort_corr':sort_corr[:5], 'pics':pics}
-
+    dict = {'foo':foo,'anomaly':buckets,'sort_corr':stats, 'pics':pics}
     env = Environment(loader=PackageLoader('metrics_advisor','templates'))
     template = env.get_template('report.tpl')
     output = './reports/report_'+suffix+'.md'
