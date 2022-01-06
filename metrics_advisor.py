@@ -71,12 +71,13 @@ if __name__ == "__main__":
         os.mkdir(report_path)
     except:
         pass
-    tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
+    #tar = tarfile.open('./metrics/write-auto-inc-rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/write-auto-inc-full-index-lookup.tar.gz')
     #tar = tarfile.open('./metrics/rand-batch-point-get.tar.gz')
     #tar = tarfile.open('./metrics/write-auto-inc.tar.gz')
     #tar = tarfile.open('./metrics/fix-update-key.tar.gz')
     #tar = tarfile.open('./metrics/full-index-lookup.tar.gz')
+    tar = tarfile.open('./metrics/cluster-4048.gz.tar')
     files = [file for file in tar.getmembers() if file.name.endswith('.csv')]
     head, _ = os.path.split(files[0].name)
     tar.extractall(tmp_dir, files)
