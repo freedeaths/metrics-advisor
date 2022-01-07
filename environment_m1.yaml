@@ -54,8 +54,11 @@ dependencies:
   - zlib=1.2.11=hee7b306_1013
   - zstd=1.5.1=h861e0a7_0
   - pip:
+    - about-time==3.1.1
+    - alive-progress==2.1.0
     - certifi==2021.10.8
     - fonttools==4.28.5
+    - grapheme==0.6.0
     - kiwisolver==1.3.2
     - markupsafe==2.0.1
     - mathbox==0.0.6
