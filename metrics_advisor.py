@@ -1,3 +1,4 @@
+import json
 import os, shutil, glob
 import time, tarfile, uuid, datetime
 #from mathbox.app.signal.correlation import max_corr
@@ -33,6 +34,7 @@ import matplotlib.transforms as mtrans
 import pandas as pd
 from jinja2 import PackageLoader, Environment
 from alive_progress import alive_bar
+import networkx as nx
 
 
 def get_valid_signals(path):
@@ -92,9 +94,14 @@ if __name__ == "__main__":
     parser.add_argument('-i', '--input', dest='input', help='input tar file',
                         required=True)
     parser.add_argument('-o', '--output', dest='output', help='output dir', required=False, default='./reports/')
+    parser.add_argument('--top', dest='top', help='set topN', required=False, default=3)
+    parser.add_argument('-vv', '--verbose', dest='verbose', type=bool, default=False, help='if verbose is set, show detail in result table')
+
     args = parser.parse_args()
     input_tar = args.input
     output_dir = args.output
+    top_n = int(args.top)
+    verbose = args.verbose
 
     sys_tmp = tempfile.gettempdir()
     tmp_dir = os.path.join(sys_tmp, "metrics-advisor", str(uuid.uuid4()))
@@ -139,7 +146,8 @@ if __name__ == "__main__":
     
     # set T
     #obj_signals = ['tidb_p99_rt:total','tidb_p99_get_token_dur','tidb_conn_cnt:by_instance','tidb_heap_size:by_instance']
-    obj_signals = ['tidb_p99_rt:total', 'tidb_p99_get_token_dur', 'tidb_heap_size:by_instance']
+    # obj_signals = ['tidb_p99_rt:total', 'tidb_p99_get_token_dur', 'tidb_mem_usage']
+    obj_signals = ['tidb_p99_rt:total']
     # set B to different time buckets
     with alive_bar(len(signals), title='detecting anomaly', length=30) as single_progress_bar:
         for item in signals:
@@ -206,7 +214,7 @@ if __name__ == "__main__":
                         plt.axvline(x=ats, color='black', linestyle='--', linewidth=0.5)
 
                     # plot correlated data
-                    for it in sort_corr[:5]:
+                    for it in sort_corr[:top_n]:
                         can = next(item for item in bucket['candidates'] if item['name'] == it['candidate']['name'] and item['node'] == it['candidate']['node'])
                         can_data = get_relative(can['data'].tolist()[40*i:40*i+40])
                         #plt.plot(can['timestamp'][40*i:40*i+40].tolist(),can_data, label='max '+str(sort_corr.index(it)+1)+' '+can['name']+'__'+can['node'])
@@ -237,11 +245,82 @@ if __name__ == "__main__":
     foo = {'bar': 'metrics-advisor team'}
     
     # pics = [f for f in os.listdir(report_path) if f.endswith(suffix+ '.png')]
-    dict = {'foo': foo, 'anomaly': buckets, 'sort_corr': stats, 'pics': pics}
+    dict = {'foo': foo, 'anomaly': buckets, 'sort_corr': stats, 'pics': pics, 'top_n': top_n}
 
     env = Environment(loader=PackageLoader('metrics_advisor','templates'))
     template = env.get_template('report.tpl')
     output = os.path.join(output_dir, 'report_{0}.md'.format(suffix))
+    debug_info_path = os.path.join(output_dir, 'debug_info_{0}.md'.format(suffix))
     with open(output, 'w') as f:
         f.write(template.render(dict))
+    # with open(debug_info_path, 'w') as f:
+    if verbose:
+        # print correlation score
+        for (stats_idx, item) in enumerate(stats):
+            if len(item) > 0:
+                for obj in item:
+                    print("obj: {0} at stats {1}".format(obj['name'], stats_idx))
+                    for can in obj['corre']:
+                        if abs(can['corr'][1]) < 0.9:
+                            continue
+                        print("metrics: {0}_{1} corr: {2}".format(can['candidate']['name'], can['candidate']['node'], can['corr']))
+        # draw network
+        first_bucket_idx = 0
+        for bucket in buckets:
+            if bucket['obj']:
+                first_bucket_idx = buckets.index(bucket)
+                break
+        source = []
+        target = []
+        weight = []
+        obj = buckets[first_bucket_idx]['obj'][0]
+        candidates = []
+        for candidate in buckets[first_bucket_idx]['candidates']:
+            if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
+                candidates.append(candidate)
+
+        candidates = buckets[first_bucket_idx]['candidates']
+        while len(candidates) > 0:
+            print(len(candidates))
+            correlation = []
+            skip_idx = []
+            for (i, candidate) in enumerate(candidates):
+                a = obj['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
+                b = candidate['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
+                result = ncc(a, b, lag_max=3)  # 原来是 10 个点，现在只用了 3 个点，系统惯性小
+                corr = max(result, key=lambda x: abs(x[1]))  # abs 的话把负相关也算上了
+                if abs(corr[1]) < 0.9:
+                    skip_idx.append(i)
+                    continue
+                correlation.append({'candidate': candidate, 'corr': corr, 'idx':i})  # 改一下 candidate['name'] -> candidate
+            if correlation != []:
+                sort_corr = sorted(correlation, key=lambda x: abs(x['corr'][1]), reverse=True)
+                n = 5 if len(correlation) > 5 else len(correlation)
+                for i, scorr in enumerate(sort_corr[:n]):
+                    source.append('{0}__{1}'.format(obj['name'], obj['node']))
+                    target.append('{0}__{1}'.format(scorr['candidate']['name'], scorr['candidate']['node']))
+                    if i == 0:
+                        weight.append(2)
+                        obj = scorr['candidate']
+                    else:
+                        weight.append(1)
+                # update candidates
+                for scorr in sort_corr[:n]:
+                    candidates.pop(scorr['idx'])
+            else:
+                for i in skip_idx[::-1]:
+                    candidates.pop(i)
+
+        edges = pd.DataFrame({'source': source,
+                              'target': target,
+                              'width': weight})
+        print(edges)
+        GG = nx.from_pandas_edgelist(edges, edge_attr='width')
+        # pos = nx.spring_layout(GG)
+        #
+        # nx.draw_networkx_edges(GG, pos, width=weight)
+        nx.draw(GG, with_labels=True)
+        plt.savefig(os.path.join(output_dir, 'network.png'))
     print('report is saved at {0}'.format(output))
+    # print('debug info is saved at {0}'.format(debug_info_path))
+
