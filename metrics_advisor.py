@@ -17,8 +17,6 @@ import os
 import time
 
 from mathbox.statistics.estimator import ncc
-#from mathbox.app.signal.correlation import max_corr
-#from mathbox.app.signal.change_point import e_divisive
 from mathbox.app.signal.filter import moving_median, f_lowpass_filter
 from mathbox.app.signal.outlier import noise_outlier
 #from energy_statistics import e_divisive # pure python
@@ -265,7 +263,7 @@ if __name__ == "__main__":
                             continue
                         print("metrics: {0}_{1} corr: {2}".format(can['candidate']['name'], can['candidate']['node'], can['corr']))
         # draw network
-        first_bucket_idx = 0
+        first_bucket_idx = -1
         for bucket in buckets:
             if bucket['obj']:
                 first_bucket_idx = buckets.index(bucket)
@@ -273,54 +271,71 @@ if __name__ == "__main__":
         source = []
         target = []
         weight = []
-        obj = buckets[first_bucket_idx]['obj'][0]
-        candidates = []
-        for candidate in buckets[first_bucket_idx]['candidates']:
-            if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
-                candidates.append(candidate)
+        if first_bucket_idx >= 0:
+            obj = buckets[first_bucket_idx]['obj'][0]
+            candidates = []
+            for candidate in buckets[first_bucket_idx]['candidates']:
+                if max(candidate['data'].tolist()) - min(candidate['data'].tolist()) > 0.005:
+                    candidates.append(candidate)
 
-        candidates = buckets[first_bucket_idx]['candidates']
-        while len(candidates) > 0:
-            print(len(candidates))
-            correlation = []
-            skip_idx = []
-            for (i, candidate) in enumerate(candidates):
-                a = obj['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
-                b = candidate['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
-                result = ncc(a, b, lag_max=3)  # 原来是 10 个点，现在只用了 3 个点，系统惯性小
-                corr = max(result, key=lambda x: abs(x[1]))  # abs 的话把负相关也算上了
-                if abs(corr[1]) < 0.9:
-                    skip_idx.append(i)
-                    continue
-                correlation.append({'candidate': candidate, 'corr': corr, 'idx':i})  # 改一下 candidate['name'] -> candidate
-            if correlation != []:
-                sort_corr = sorted(correlation, key=lambda x: abs(x['corr'][1]), reverse=True)
-                n = 5 if len(correlation) > 5 else len(correlation)
-                for i, scorr in enumerate(sort_corr[:n]):
-                    source.append('{0}__{1}'.format(obj['name'], obj['node']))
-                    target.append('{0}__{1}'.format(scorr['candidate']['name'], scorr['candidate']['node']))
-                    if i == 0:
-                        weight.append(2)
-                        obj = scorr['candidate']
-                    else:
-                        weight.append(1)
-                # update candidates
-                for scorr in sort_corr[:n]:
-                    candidates.pop(scorr['idx'])
-            else:
-                for i in skip_idx[::-1]:
-                    candidates.pop(i)
+            candidates = buckets[first_bucket_idx]['candidates']
+            while len(candidates) > 0:
+                print("obj is {0}_{1}".format(obj['name'], obj['node']))
+                correlation = []
+                removable_idx = set()
+                for (i, candidate) in enumerate(candidates):
+                    a = obj['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
+                    b = candidate['data'][40 * first_bucket_idx: 40 * first_bucket_idx + 40].tolist()
+                    result = ncc(a, b, lag_max=3)  # 原来是 10 个点，现在只用了 3 个点，系统惯性小
+                    corr = max(result, key=lambda x: abs(x[1]))  # abs 的话把负相关也算上了
+                    if abs(corr[1]) < 0.9:
+                        print("{0} is removable because of {1}".format(candidates[i]['name']+'_'+candidates[i]['node'], abs(corr[1])))
+                        removable_idx.add(i)
+                        continue
+                    correlation.append({'candidate': candidate, 'corr': corr, 'idx': i})  # 改一下 candidate['name'] -> candidate
+                if correlation != []:
+                    sort_corr = sorted(correlation, key=lambda x: abs(x['corr'][1]), reverse=True)
+                    n = 5 if len(correlation) > 5 else len(correlation)
 
-        edges = pd.DataFrame({'source': source,
-                              'target': target,
-                              'width': weight})
-        print(edges)
-        GG = nx.from_pandas_edgelist(edges, edge_attr='width')
-        # pos = nx.spring_layout(GG)
-        #
-        # nx.draw_networkx_edges(GG, pos, width=weight)
-        nx.draw(GG, with_labels=True)
-        plt.savefig(os.path.join(output_dir, 'network.png'))
+                    for i, scorr in enumerate(sort_corr[:n]):
+                        s = '{0}__{1}'.format(obj['name'], obj['node'])
+                        t = '{0}__{1}'.format(scorr['candidate']['name'], scorr['candidate']['node'])
+                        print("add edge {0}->{1}".format(s,t))
+                        source.append(s)
+                        target.append(t)
+                        if i == 0:
+                            weight.append(2)
+                        else:
+                            weight.append(1)
+                        removable_idx.add(scorr['idx'])
+
+                    obj = sort_corr[0]['candidate']
+
+                if len(removable_idx)>0:
+                    for i in sorted(removable_idx, reverse=True):
+                        candidates.pop(i)
+                for c in candidates:
+                    print("remain metrics {0}_{1}".format(c['name'], c['node']))
+
+            G = nx.Graph()
+
+            for i in range(len(source)):
+                print("{0},{1},{2}".format(source[i], target[i], weight[i]))
+                G.add_edge(source[i], target[i], length=20, width=weight[i])
+
+            print(G.nodes())
+            print(G.edges())
+            # hub_ego = nx.ego_graph(G, source[0])
+            pos = nx.kamada_kawai_layout(G)  # Seed layout for reproducibility
+
+            # pos = nx.spring_layout(G, seed=10)
+            # GG = nx.from_pandas_edgelist(edges, edge_attr='width')
+            # # pos = nx.spring_layout(GG)
+            # #
+            # nx.draw_networkx(hub_ego, pos, node_color="b", node_size=50, with_labels=True)
+            plt.figure(figsize=(24, 16))
+            color_map = ['red' if node == source[0] else 'grey' for node in G]
+            nx.draw_networkx(G, pos=pos, with_labels=True, width=weight,font_size=10, alpha=0.7, node_color=color_map)
+            plt.savefig(os.path.join(output_dir, 'network.png'), bbox_inches="tight")
     print('report is saved at {0}'.format(output))
     # print('debug info is saved at {0}'.format(debug_info_path))
-
